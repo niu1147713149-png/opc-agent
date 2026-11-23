@@ -119,7 +119,7 @@ group('2. 环境/端点决策：有官方配置就不替 CLI 猜环境');
   const official = planSdkRuntime({ environment: 'external', endpoint: INTL, hasProductConfig: true });
   eq(official.reason, 'official-v3-config', '有官方 V3 配置 → 走 authoritative 分支');
   ok(!('environment' in official), '★ 有官方配置时省略 environment（避免 product.external.json）');
-  eq(official.endpoint, INTL, '端点仍显式跟随官方声明');
+  ok(!('endpoint' in official), '★ 有官方配置时省略 endpoint（不重复触发切环境探测）');
 
   const fallback = planSdkRuntime({ environment: 'external', endpoint: INTL, hasProductConfig: false });
   eq(fallback.reason, 'external-not-cli-env', '没有官方配置 → 回落分支');
@@ -161,7 +161,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-a216-'));
   });
   eq(rt.env.ACC_PRODUCT_CONFIG_PATH, cfg, '★ ACC_PRODUCT_CONFIG_PATH 指向官方快照');
   eq(rt.env.CODEBUDDY_CONFIG_DIR, TMP, 'CODEBUDDY_CONFIG_DIR 仍指向生效数据根');
-  eq(rt.endpoint, 'https://www.workbuddy.ai', '端点跟随官方声明');
+  ok(!('endpoint' in rt), '★ 端点由官方快照决定，不在 initialize 中重复指定');
   ok(!('environment' in rt), '★ 运行时不再给 CLI 一个不存在的 environment');
 
   // A231：设置源与 UA 覆盖（SDK 默认 none 屏蔽登录态；SDK UA 被网关 401）
@@ -246,8 +246,8 @@ group('5. 源码契约：剥注释 + 锚行首 + 反向探针');
    * 否则「改坏了也能全绿」就是恒绿摆设。
    */
   const probeSrc = (rt: string, sk: string) => ({
-    /** 有官方配置时省略 environment（return 对象里不带 environment） */
-    noExternal: /return \{ endpoint, reason: 'official-v3-config' \};/.test(rt),
+    /** 有官方配置时不重复指定 environment / endpoint */
+    noExternal: /return \{ reason: 'official-v3-config' \};/.test(rt),
     /** 注入语句真的在，不是只写了常量名 */
     injectPath: hasLine(rt, /env\.ACC_PRODUCT_CONFIG_PATH = configPath;/),
     /** 注入前先校验快照可读 */
@@ -259,7 +259,7 @@ group('5. 源码契约：剥注释 + 锚行首 + 反向探针');
   });
 
   const good = probeSrc(runtime, sdk);
-  ok(good.noExternal, '★ 有官方配置时 return 对象里没有 environment（environment/endpoint 二选一）');
+  ok(good.noExternal, '★ 有官方配置时 return 对象里没有 environment / endpoint');
   ok(good.injectPath, '★ ACC_PRODUCT_CONFIG_PATH 注入语句确实在');
   ok(good.existsCheck, '注入前先校验快照可读（不指不存在的文件）');
   ok(good.envName, '运行时使用了官方声明的变量名');
@@ -274,7 +274,7 @@ group('5. 源码契约：剥注释 + 锚行首 + 反向探针');
 
   // ── 三个坏版本，各自退回一段实现 ──────────────────────────────
   const badPassExternal = probeSrc(
-    runtime.replace("return { endpoint, reason: 'official-v3-config' };",
+    runtime.replace("return { reason: 'official-v3-config' };",
       "return { environment: input.environment, endpoint, reason: 'official-v3-config' };"),
     sdk
   );

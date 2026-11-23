@@ -16,6 +16,8 @@ import {
   invalidateAllModelCaches,
   __sdkCacheEmpty,
   __setSdkCacheForTest,
+  _setSdkCache,
+  sdkDefaultModel,
 } from '../server/model-cache.js';
 import { __setCatalogStateForTest } from '../server/agents/modelCatalog.js';
 
@@ -107,6 +109,18 @@ console.log('\n[4] 连续失效不报错（幂等性）');
   // 再调一次不应该崩
   invalidateAllModelCaches('second');
   ok(__sdkCacheEmpty(), '第二次失效后仍为空（幂等）');
+}
+
+console.log('\n[5] 默认模型必须属于当前清单');
+{
+  _setSdkCache([{ modelId: 'first', name: 'First' }, { modelId: 'chosen', name: 'Chosen' }], 'chosen');
+  ok(sdkDefaultModel === 'chosen', '采用清单中声明的默认项');
+  _setSdkCache([{ modelId: 'new-first', name: 'New First' }]);
+  ok(sdkDefaultModel === 'new-first', '刷新为 thin 清单后不残留旧默认值');
+  _setSdkCache([{ modelId: 'valid', name: 'Valid' }], 'retired');
+  ok(sdkDefaultModel === 'valid', '默认元数据失效时使用清单首项');
+  _setSdkCache([]);
+  ok(sdkDefaultModel === undefined, '空清单清除默认模型');
 }
 
 console.log(`\n=== ${pass}/${pass + fail} 通过 ===`);

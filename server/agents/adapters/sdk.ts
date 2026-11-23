@@ -25,7 +25,7 @@ import { createCanUseToolBridge } from './sdkApproval.js';
 import {
   createStreamTextState,
   mapStreamTextEvent,
-  takeStreamedText,
+  selectStreamTextMessage,
   takeStreamedThinking,
   takeStreamedTotalText,
   type StreamTextState,
@@ -1411,17 +1411,26 @@ export function mapSdkMessage(
   }
 
   if (m.type === 'assistant') {
-    const content = (m.message as { content?: unknown })?.content;
+    const message = m.message as { id?: unknown; content?: unknown };
+    if (!isSubAgent) selectStreamTextMessage(stream, message?.id);
+    const content = message?.content;
     if (typeof content === 'string') {
       // 增量已推过的部分不再重复；否则同一条正文会翻倍。子 Agent 不参与去重。
       const text = isSubAgent ? content : takeStreamedTotalText(stream, content);
       if (text) queue.push({ type: 'text', content: text });
     } else if (Array.isArray(content)) {
+      // WorkBuddy 的流可能保留空 thinking 块，最终快照却省略它，导致 index 错位。
+      // 按当前消息的正文总进度对齐，再分配到原块；不改变工具/思考块的顺序。
+      const fullText = content.filter(b => b?.type === 'text').map(b => String(b.text ?? '')).join('');
+      let skipText = !isSubAgent && fullText
+        ? fullText.length - takeStreamedTotalText(stream, fullText).length : 0;
       for (let index = 0; index < content.length; index += 1) {
         const block = content[index] as Record<string, unknown>;
         if (block.type === 'text') {
           const full = String(block.text ?? '');
-          const text = isSubAgent ? full : takeStreamedText(stream, index, full);
+          const skip = Math.min(skipText, full.length);
+          const text = full.slice(skip);
+          skipText -= skip;
           if (text) queue.push({ type: 'text', content: text });
         } else if (block.type === 'thinking') {
           // A111：思考块以前在这里被**静默丢弃** —— 这个循环只认 text / image /

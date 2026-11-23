@@ -16,7 +16,6 @@ import net from 'net';
 import {
   resolveModelForAgent,
   PLATFORM_DEFAULT_MODEL,
-  SDK_DEFAULT_MODEL,
 } from '../server/model-routing.js';
 import { allHostsUnreachable, checkHostReachable } from '../server/agents/probe.js';
 import { findDef } from '../server/agents/definitions.js';
@@ -56,8 +55,7 @@ function ok(cond: boolean, label: string, detail?: string) {
 {
   const D = PLATFORM_DEFAULT_MODEL;
 
-  // SDK 类：缺省交给 SDK 自己的默认别名（default-model / Auto），
-  // 不再回落到已下线的 claude-sonnet-4。
+  // 清单未知时不猜默认值，显式请求仍可沿用。
   eq(
     resolveModelForAgent('workbuddy', 'claude-opus-4'),
     'claude-opus-4',
@@ -65,10 +63,10 @@ function ok(cond: boolean, label: string, detail?: string) {
   );
   eq(
     resolveModelForAgent('workbuddy', undefined),
-    SDK_DEFAULT_MODEL,
-    'SDK：缺省应回落到 SDK 默认模型 default-model'
+    undefined,
+    'SDK：清单未知时不硬编码默认模型'
   );
-  eq(resolveModelForAgent('workbuddy', ''), SDK_DEFAULT_MODEL, 'SDK：空串应视作未指定');
+  eq(resolveModelForAgent('workbuddy', ''), undefined, 'SDK：空串应视作未指定');
 
   // 白名单类（opencode）：只有命中白名单才采用
   const oc = findDef('opencode')!;

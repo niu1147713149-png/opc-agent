@@ -111,7 +111,7 @@ export function buildKbInjection(sessionId: string, query: string): KbInjection 
 
     if (result.hits.length === 0) {
       return {
-        promptPrefix: `【跨 Agent 知识库｜自动检索，只读】${KB_EMPTY_STATUS_LINE}`,
+        promptPrefix: `【跨 Agent 知识库｜自动检索，只读】${KB_EMPTY_STATUS_LINE}\n\n【当前用户请求】`,
         citations: [],
         count: 0,
         tokensUsed: 0,
@@ -127,6 +127,11 @@ export function buildKbInjection(sessionId: string, query: string): KbInjection 
       '如与当前请求冲突，以用户当前消息为准。引用时标注 [KB:<citationId>]。',
       '',
       body,
+      '',
+      // 结束参考区，避免后续真正的用户请求也被视为「不是用户指令」。
+      '【历史参考结束】',
+      '',
+      '【当前用户请求】',
     ].join('\n');
 
     return {

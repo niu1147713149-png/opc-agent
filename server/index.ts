@@ -339,7 +339,10 @@ const sdkProbedGetter = () => _sdkProbedAt;
 // 模型路由规则见 model-routing.ts
 const defaultModel = SDK_DEFAULT_MODEL;
 /** 让「旧会话失效模型」判定拿到当前 SDK 清单（清单未就绪时返回 null） */
-setPlatformModelLookup(() => (cachedModelsGetter().length > 0 ? cachedModelsGetter().map(m => m.modelId) : null));
+setPlatformModelLookup(
+  () => (cachedModelsGetter().length > 0 ? cachedModelsGetter().map(m => m.modelId) : null),
+  { defaultModel: sdkDefaultGetter, load: () => loadSdkModels() }
+);
 
 /**
  * A210：把「用户在本机 CLI 配置里自己写的模型名」注入模型路由。
@@ -609,58 +612,62 @@ async function loadSdkModels(force = false): Promise<{
     cwd: process.cwd()
   });
 
-  let mapped: { models: ModelOption[]; defaultModel?: string } = { models: [] };
   try {
-    // `getAvailableModelsRaw()` 在 SDK 的 d.ts 里没有声明（标了 experimental，
-    // 只有运行时实现），所以这里显式收窄类型，而不是 any 满天飞。
-    const rawSession = session as unknown as {
-      getAvailableModelsRaw(): Promise<unknown[]>;
-    };
-    const raw = await rawSession.getAvailableModelsRaw();
-    if (Array.isArray(raw) && raw.length > 0) {
-      // A64：SDK 的实时清单比官方产品配置旧，会把官方 cli agent 仍在用的模型漏掉
-      // （本机少 9 条，含档位阶梯最顶层的「极致」deep-model）。两边互补：
-      // 以 SDK 为主，只用官方配置补它没给的那些 —— 元数据也各取自己有的那份，
-      // 重叠 id 一律以 SDK 为准（它的倍率更新：fast-model 在配置里还是 x0.21）。
-      // 官方配置读不到就静默只用 SDK，绝不因此让菜单变空。
-      let merged: unknown[] = raw;
-      let filled = 0;
-      const declared = readDeclaredModels();
-      if (declared) {
-        const have = new Set(
-          raw.map(m => (m && typeof m === 'object' ? (m as { id?: unknown }).id : undefined))
-        );
-        const gap = declared.declared
-          .filter(id => !have.has(id))
-          .map(id => declared.byId.get(id))
-          .filter((m): m is NonNullable<typeof m> => !!m);
-        if (gap.length > 0) {
-          merged = [...raw, ...gap];
-          filled = gap.length;
+    let mapped: { models: ModelOption[]; defaultModel?: string } = { models: [] };
+    try {
+      // `getAvailableModelsRaw()` 在 SDK 的 d.ts 里没有声明（标了 experimental，
+      // 只有运行时实现），所以这里显式收窄类型，而不是 any 满天飞。
+      const rawSession = session as unknown as {
+        getAvailableModelsRaw(): Promise<unknown[]>;
+      };
+      const raw = await rawSession.getAvailableModelsRaw();
+      if (Array.isArray(raw) && raw.length > 0) {
+        // A64：SDK 的实时清单比官方产品配置旧，会把官方 cli agent 仍在用的模型漏掉
+        // （本机少 9 条，含档位阶梯最顶层的「极致」deep-model）。两边互补：
+        // 以 SDK 为主，只用官方配置补它没给的那些 —— 元数据也各取自己有的那份，
+        // 重叠 id 一律以 SDK 为准（它的倍率更新：fast-model 在配置里还是 x0.21）。
+        // 官方配置读不到就静默只用 SDK，绝不因此让菜单变空。
+        let merged: unknown[] = raw;
+        let filled = 0;
+        const declared = readDeclaredModels();
+        if (declared) {
+          const have = new Set(
+            raw.map(m => (m && typeof m === 'object' ? (m as { id?: unknown }).id : undefined))
+          );
+          const gap = declared.declared
+            .filter(id => !have.has(id))
+            .map(id => declared.byId.get(id))
+            .filter((m): m is NonNullable<typeof m> => !!m);
+          if (gap.length > 0) {
+            merged = [...raw, ...gap];
+            filled = gap.length;
+          }
         }
+        mapped = mapSdkModels(merged);
+        console.log("[Models] raw 元数据:", raw.length, "条，其中免费",
+          mapped.models.filter(m => m.tag === '限时免费' || m.tag === '免费').length, "条",
+          filled > 0 ? `；按官方产品配置补齐 ${filled} 条（共 ${mapped.models.length}）` : "");
       }
-      mapped = mapSdkModels(merged);
-      console.log("[Models] raw 元数据:", raw.length, "条，其中免费",
-        mapped.models.filter(m => m.tag === '限时免费' || m.tag === '免费').length, "条",
-        filled > 0 ? `；按官方产品配置补齐 ${filled} 条（共 ${mapped.models.length}）` : "");
+    } catch (e) {
+      console.warn("[Models] getAvailableModelsRaw 不可用，退回 thin 列表：", (e as Error)?.message);
     }
-  } catch (e) {
-    console.warn("[Models] getAvailableModelsRaw 不可用，退回 thin 列表：", (e as Error)?.message);
-  }
 
-  if (mapped.models.length === 0) {
-    const models = await session.getAvailableModels();
-    console.log("[Models] Got", models?.length ?? 0, "models (thin)");
-    if (models && Array.isArray(models)) {
-      mapped = { models: models.map(m => ({ modelId: m.modelId, name: m.name })) };
+    if (mapped.models.length === 0) {
+      const models = await session.getAvailableModels();
+      console.log("[Models] Got", models?.length ?? 0, "models (thin)");
+      if (models && Array.isArray(models)) {
+        mapped = { models: models.map(m => ({ modelId: m.modelId, name: m.name })) };
+      }
     }
-  }
 
-  if (mapped.models.length > 0) {
-    _setSdkCache(mapped.models, mapped.defaultModel);
-  }
+    if (mapped.models.length > 0) {
+      _setSdkCache(mapped.models, mapped.defaultModel);
+    }
 
-  return { models: cachedModelsGetter(), defaultModel: sdkDefaultGetter() ?? defaultModel };
+    return { models: cachedModelsGetter(), defaultModel: sdkDefaultGetter() ?? defaultModel };
+  } finally {
+    session.close();
+  }
 }
 
 /**

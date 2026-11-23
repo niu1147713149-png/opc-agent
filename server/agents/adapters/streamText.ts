@@ -13,22 +13,16 @@ import type { AgentEvent } from '../types.js';
  */
 
 export interface StreamTextState {
+  /** 原生生成消息 ID；不同消息的相同正文不能互相去重。 */
+  messageId?: string;
   /** 当前 assistant 消息的 content block 增量缓存（key = block index） */
   blocks: Map<number, { kind: 'text' | 'thinking'; text: string }>;
-  /** 当前消息已推出的正文总量（assistant content 为字符串时用于去重） */
+  /** 当前消息已推出的流式正文总量，不依赖最终快照的块编号。 */
   totalText: string;
   /**
-   * 本轮每个块最近一次整条下发的正文（key = `${kind}:${index}`），
-   * 以及字符串正文的最近一次整条下发（settledTotal）。
-   *
-   * 为什么需要：增量去重只对「先增量、后整条」这一种顺序有效。实测
-   * WorkBuddy 会把**同一条 assistant 消息下发两次**（CLI 侧会话记录里
-   * 只有一份 87 字的回答，界面上却拼成了 174 字），中间还可能夹一条
-   * message_start 把增量缓存清空。于是第二次到达时既没有增量可减、也
-   * 没有缓存可比，整段又被追加一遍。
-   *
-   * 这两个字段跨 message_start 保留（生命周期 = 一轮），只用于识别
-   * 「同一块、同一段文字再次下发」，不参与任何内容裁剪。
+   * 最近一次完整快照：块按 `${kind}:${index}` 缓存，正文另存拼接总量。
+   * 跨同 ID 或无 ID 的 message_start 保留，用于过滤重复快照并补齐尾部；
+   * 明确切换消息 ID 时清空，避免误删另一条消息的相同内容。
    */
   settled: Map<string, string>;
   settledTotal: string;
@@ -42,6 +36,17 @@ function reset(state: StreamTextState): void {
   state.blocks.clear();
   state.totalText = '';
   // settled 刻意不清：它挡的正是「重置之后同段再来一次」
+}
+
+/** 流事件和最终快照共用消息身份；没有 ID 的旧协议保留原有行为。 */
+export function selectStreamTextMessage(state: StreamTextState, id: unknown): void {
+  if (typeof id !== 'string' || !id || state.messageId === id) return;
+  if (state.messageId) {
+    reset(state);
+    state.settled.clear();
+    state.settledTotal = '';
+  }
+  state.messageId = id;
 }
 
 function append(
@@ -72,6 +77,7 @@ export function mapStreamTextEvent(message: unknown, state: StreamTextState): Ag
   if (!raw || typeof raw !== 'object') return null;
   const ev = raw as {
     type?: unknown;
+    message?: { id?: unknown };
     index?: unknown;
     delta?: { type?: unknown; text?: unknown; thinking?: unknown };
     content_block?: { type?: unknown; text?: unknown; thinking?: unknown };
@@ -79,6 +85,7 @@ export function mapStreamTextEvent(message: unknown, state: StreamTextState): Ag
   const type = typeof ev.type === 'string' ? ev.type : '';
 
   if (type === 'message_start') {
+    selectStreamTextMessage(state, ev.message?.id);
     reset(state);
     return [];
   }
@@ -147,9 +154,13 @@ export function takeStreamedThinking(state: StreamTextState, index: number, full
   return remainder(block.text, full);
 }
 
-/** 无 block index 的字符串正文（部分 SDK 会把 content 直接给成字符串）。 */
+/** 按整条消息的正文进度补尾，兼容字符串正文和重新编号的 text 块。 */
 export function takeStreamedTotalText(state: StreamTextState, full: string): string {
-  if (full && state.settledTotal === full) return '';
+  const previous = state.settledTotal;
+  if (full && previous.startsWith(full)) return '';
   state.settledTotal = full;
-  return remainder(state.totalText, full);
+  // 先前的完整快照也可能补过尾部，后续快照不能把该尾部再补一次。
+  const emitted = full.startsWith(previous) && previous.length > state.totalText.length
+    ? previous : state.totalText;
+  return remainder(emitted, full);
 }

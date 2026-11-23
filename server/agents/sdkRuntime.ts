@@ -1,7 +1,7 @@
 /**
  * SDK 运行参数（A155 / A216）：把定义表里的 `SdkSpec` 展开成 SDK 真正认的
  * `{ environment, endpoint, env }`；A216 起新增官方产品配置路径注入，并让
- * `environment` 与 `endpoint` 按官方口径二选一（见 `planSdkRuntime`）。
+ * 官方配置存在时由它独占环境与端点的选择（见 `planSdkRuntime`）。
  *
  * ## 为什么单独一层，而不是在适配器里拼
  *
@@ -80,9 +80,10 @@ export interface RuntimePlan {
  *    `environment` 与 `endpoint` 明确二选一；同时传会让 CLI 在
  *    `ClientInternetEnviromentProductProvider` 里判定冲突（它自己会打
  *    `internet environment conflict` 并指出 V3 优先）。
- * 2. **有官方 V3 配置就别再替 CLI 猜环境**：注入 `ACC_PRODUCT_CONFIG_PATH`
+ * 2. **有官方 V3 配置就别再显式切换环境或端点**：注入 `ACC_PRODUCT_CONFIG_PATH`
  *    后，CLI 从配置自身读 `networkEnvironment` 和 authoritative `endpoint`
- *    （provider 优先级 20000 > 6005），我们再传一份 environment 只会制造冲突。
+ *    （provider 优先级 20000 > 6005）。重复传 endpoint 还会触发 initialize 的
+ *    switchEnvironment 网络探测，端点相同也可能卡住握手。
  *
  * 没有官方配置时才退回声明式（定义表兜底快照）：这时保留原有两者并传，
  * 因为 A155 实测过「只改环境/端点、不指配置根 → initialize 超时 174s」，
@@ -95,7 +96,7 @@ export function planSdkRuntime(input: {
 }): RuntimePlan {
   const endpoint = input.endpoint?.trim() || undefined;
   if (input.hasProductConfig) {
-    return { endpoint, reason: 'official-v3-config' };
+    return { reason: 'official-v3-config' };
   }
   if (input.environment === 'external') {
     // 没有 V3 配置可依，CLI 又没有 product.external.json：只给端点，

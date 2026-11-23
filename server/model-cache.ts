@@ -8,7 +8,7 @@
  *
  * 1. **`cachedModels`** — WorkBuddy SDK `getAvailableModelsRaw()` 返回的模型清单。
  *    全局单值：WorkBuddy 走 OAuth 登录态，不走应用内凭据，所以同一时间只有一份。
- * 2. **`sdkDefaultModel`** — SDK 自己声明的默认模型（`isDefault`），优先于平台常量。
+ * 2. **`sdkDefaultModel`** — SDK 声明的默认模型；缺少标记时用清单首项。
  * 3. **`sdkModelsProbedAt`** — SDK 清单**真正被取过**的时刻（不是 GET 命中缓存的时间）。
  *
  * CLI 目录缓存（`modelCatalog` 的 `state`）不在这里管——它有自己的 `invalidateCatalog()`。
@@ -19,7 +19,7 @@ import { invalidateCatalog } from "./agents/modelCatalog.js";
 
 /** 缓存可用模型列表（含 description / 免费付费角标，见 agents/sdk-models.ts） */
 export let cachedModels: ModelOption[] = [];
-/** SDK 自己声明的默认模型（`isDefault`），拿到之后优先于平台常量 */
+/** 当前清单内的默认模型，不保留上一次清单里已经失效的默认值。 */
 export let sdkDefaultModel: string | undefined;
 /**
  * P0：SDK 清单**真正被取过**的时刻。
@@ -33,7 +33,7 @@ export let sdkModelsProbedAt = 0;
 /** 内部 setter：loadSdkModels 取到清单后更新缓存值 */
 export function _setSdkCache(models: ModelOption[], defaultMdl?: string): void {
   cachedModels = models;
-  if (defaultMdl) sdkDefaultModel = defaultMdl;
+  sdkDefaultModel = models.some(m => m.modelId === defaultMdl) ? defaultMdl : models[0]?.modelId;
 }
 
 /** 内部 setter：记录 SDK 取数时刻 */

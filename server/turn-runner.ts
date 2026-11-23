@@ -21,7 +21,7 @@ import * as db from './db.js';
 import { RunProjector } from './agents/projector.js';
 import { registry } from './agents/registry.js';
 import { runProfileOf } from './agents/capability.js';
-import { resolveStoredModelForAgent } from './model-routing.js';
+import { prepareModelForAgent, resolveStoredModelForAgent } from './model-routing.js';
 import type { PermissionMode } from './agents/definitions.js';
 import { publishRunEvent, runHub } from './run-hub.js';
 import { isInternalPhase, type AgentTurnResult, type TurnPhase } from './orchestrator.js';
@@ -129,8 +129,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     // 内部阶段（如 dispatch 的 route）只服务于编排决策：不建气泡、不落库。
     // 用户的可见叙述走 group_note，见 orchestrator.ts 的 INTERNAL_PHASES 注释。
     const internal = isInternalPhase(phase);
-    // 旧会话可能存着已下线的模型名（如 `claude-sonnet-4`）。Tencent SDK 的
-    // 失效名在这里回退 `undefined`，不传 `--model`，交给 SDK 自己的默认。
+    // 群聊/工作流不一定打开过模型菜单，先取清单再解析每个成员的默认值。
+    await prepareModelForAgent(agentId, deps.model || session.model);
     const resolvedModel = resolveStoredModelForAgent(
       agentId,
       deps.model || session.model || undefined

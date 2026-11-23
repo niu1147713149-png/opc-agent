@@ -13,7 +13,7 @@ import './lib/temp-data-dir.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { AsyncQueue } from '../server/agents/channel.js';
-import { SdkAdapter } from '../server/agents/adapters/sdk.js';
+import { SdkAdapter, mapSdkMessage } from '../server/agents/adapters/sdk.js';
 import { mapClaudeSdkMessage } from '../server/agents/adapters/claude-sdk.js';
 import {
   createStreamTextState,
@@ -130,6 +130,16 @@ rl.on('line', (line) => {
     send({ type: 'assistant', parent_tool_use_id: 'toolu_1', message: { role: 'assistant', content: [{ type: 'text', text: '子任务' }] } });
     // 主回答整条随后到达：应被完全剪掉
     send({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '主回答' }] } });
+  } else if (mode === 'empty-thinking') {
+    // WorkBuddy may reserve thinking index 0, then omit that empty block in the snapshot.
+    raw({ type: 'message_start', message: { id: 'shifted-message' } });
+    raw({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } });
+    delta(0, { type: 'thinking_delta', thinking: '' });
+    raw({ type: 'content_block_stop', index: 0 });
+    delta(1, { type: 'text_delta', text: 'stub-' });
+    delta(1, { type: 'text_delta', text: 'reply-你好' });
+    raw({ type: 'message_stop' });
+    send({ type: 'assistant', message: { id: 'shifted-message', role: 'assistant', content: [{ type: 'text', text: full }] } });
   } else if (mode === 'unknown') {
     raw({ type: 'ping', nonce: 7 });
     send({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: full }] } });
@@ -255,6 +265,12 @@ async function l2(): Promise<void> {
     `主回答出现 ${mainTimes} 次 / 拼接=${subTexts.map((t) => t.content).join('')}`
   );
 
+  const evShifted = await sendWithMode(adapter, 'p1-empty-thinking', 'empty-thinking');
+  const shiftedTexts = evShifted.filter((e) => e.type === 'text') as Array<{ content: string }>;
+  say('2-10 空思考块被省略后，真实 SDK 链路不重复正文',
+    shiftedTexts.map(t => t.content).join('') === 'stub-reply-你好',
+    shiftedTexts.map(t => t.content).join(''));
+
   adapter.dispose();
 }
 
@@ -298,10 +314,57 @@ async function l3(): Promise<void> {
   );
 }
 
+async function workbuddySnapshots(): Promise<void> {
+  const text = '你好！有什么需要我帮忙的吗？';
+  const start = (id: string) => ({ type: 'stream_event', event: { type: 'message_start', message: { id } } });
+  const delta = (index: number, value: string, thinking = false) => ({
+    type: 'stream_event', event: { type: 'content_block_delta', index,
+      delta: thinking ? { type: 'thinking_delta', thinking: value } : { type: 'text_delta', text: value } },
+  });
+  const assistant = (content: unknown, id = 'msg-1') => ({ type: 'assistant', message: { id, content } });
+  const textBlock = (value: string) => ({ type: 'text', text: value });
+  const cases = [
+    { name: '空思考块使流式正文 index=1、最终正文 index=0', expected: text,
+      messages: [start('msg-1'), delta(0, '', true), delta(1, text), assistant([textBlock(text)])] },
+    { name: '思考和正文分成两条 assistant 时不重发正文', expected: text, thinking: '先想一下',
+      messages: [start('msg-1'), delta(0, '先想一下', true), delta(1, text),
+        assistant([{ type: 'thinking', thinking: '先想一下' }]), assistant([textBlock(text)])] },
+    { name: '多个正文块重新编号后不重复，也不误删相同块', expected: 'ABAB',
+      messages: [start('msg-1'), delta(0, '', true), delta(1, 'AB'), delta(2, 'AB'),
+        assistant([textBlock('AB'), textBlock('AB')])] },
+    { name: '逐步变长的最终快照只补未输出的后缀', expected: 'ABCDE',
+      messages: [start('msg-1'), delta(1, 'AB'), assistant([textBlock('ABCD')]), assistant([textBlock('ABCDE')])] },
+    { name: '同一消息在数组和字符串两种表示间切换不翻倍', expected: text,
+      messages: [assistant([textBlock(text)]), assistant(text), assistant([textBlock(text)])] },
+    { name: '模型有意输出的重复文字必须完整保留', expected: '哈哈哈哈',
+      messages: [start('msg-1'), delta(1, '哈哈'), delta(1, '哈哈'), assistant([textBlock('哈哈哈哈')])] },
+    { name: '不同消息 ID 的相同内容不是重复投递', expected: text + text,
+      messages: [assistant([textBlock(text)], 'msg-1'), assistant([textBlock(text)], 'msg-2')] },
+    { name: '新的消息开始后清空上一条的已输出进度', expected: 'ABABCD',
+      messages: [start('msg-1'), delta(0, 'AB'), assistant([textBlock('AB')]),
+        start('msg-2'), delta(1, 'A'), assistant([textBlock('ABCD')], 'msg-2')] },
+  ];
+  for (const scenario of cases) {
+    const queue = new AsyncQueue<AgentEvent>();
+    const state = { currentToolId: null, openTools: [], started: Date.now() };
+    const projector = new RunProjector({ runId: 'fixture-run', sessionId: 'fixture-session', messageId: 'fixture-message', agentId: 'workbuddy' });
+    for (const message of scenario.messages) mapSdkMessage(message, ctx({ sessionId: 'fixture-session' }), queue, state);
+    queue.close();
+    const events = await drain(queue);
+    for (const event of events) projector.push(event);
+    const rendered = projector.blockList.filter(b => b.type === 'text').map(b => b.text).join('');
+    say(`4 ${scenario.name}`, rendered === scenario.expected, rendered);
+    if (scenario.thinking) {
+      say('4 思考内容仍保留一份', events.filter(e => e.type === 'thinking').map(e => e.content).join('') === scenario.thinking);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   l1();
   await l2();
   await l3();
+  await workbuddySnapshots();
   console.log(`\n[STREAM] ${failed === 0 ? '全部通过' : `失败 ${failed} 项`}`);
   if (failed > 0) process.exitCode = 1;
 }

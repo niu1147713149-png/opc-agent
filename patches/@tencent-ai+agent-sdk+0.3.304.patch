@@ -1,0 +1,57 @@
+diff --git a/node_modules/@tencent-ai/agent-sdk/lib/auth.js b/node_modules/@tencent-ai/agent-sdk/lib/auth.js
+index 685f517..d2d4588 100644
+--- a/node_modules/@tencent-ai/agent-sdk/lib/auth.js
++++ b/node_modules/@tencent-ai/agent-sdk/lib/auth.js
+@@ -40,13 +40,20 @@ async function authenticate(options) {
+         executableArgs,
+         env,
+     });
+-    transport.start();
+-    // Send initialize request with environment info and check if already authenticated
+-    const initResponse = await transport.sendControlRequest({
+-        subtype: 'initialize',
+-        environment,
+-        endpoint,
+-    });
++    let initResponse;
++    try {
++        transport.start();
++        // Initialization can fail before the login flow installs its cleanup handler.
++        initResponse = await transport.sendControlRequest({
++            subtype: 'initialize',
++            environment,
++            endpoint,
++        });
++    }
++    catch (err) {
++        transport.close();
++        throw err;
++    }
+     // If already authenticated, return existing userinfo
+     if (initResponse.account?.userId && initResponse.account?.token) {
+         transport.close();
+diff --git a/node_modules/@tencent-ai/agent-sdk/lib/transport/process-transport.js b/node_modules/@tencent-ai/agent-sdk/lib/transport/process-transport.js
+index 354c2b0..45dabe3 100644
+--- a/node_modules/@tencent-ai/agent-sdk/lib/transport/process-transport.js
++++ b/node_modules/@tencent-ai/agent-sdk/lib/transport/process-transport.js
+@@ -197,6 +197,9 @@ class ProcessTransport {
+      * @returns A promise that resolves when the transport is ready (CLI process started).
+      */
+     async ensureReady() {
++        if (this.closed) {
++            throw new Error(this._closeReason ?? 'Transport closed');
++        }
+         // Already ready
+         if (this._isCliReady) {
+             return;
+@@ -432,6 +435,10 @@ class ProcessTransport {
+      * Start the transport - spawns CLI process.
+      */
+     start() {
++        // A pending connect/interrupt may resume after close(). Never spawn again.
++        if (this.closed) {
++            throw new Error(this._closeReason ?? 'Transport closed');
++        }
+         if (this.process) {
+             return;
+         }

@@ -130,6 +130,8 @@ async function main(): Promise<void> {
   const hit = inject.buildKbInjection(sA.id, '并发写冲突');
   ok('首轮有命中时返回注入', Boolean(hit), JSON.stringify(hit?.count));
   ok('注入片段含 citationId 标记', Boolean(hit?.promptPrefix.match(/\[KB:[^\]]+\]/)), hit?.promptPrefix?.slice(0, 80));
+  ok('命中参考后明确结束历史片段', Boolean(hit?.promptPrefix.includes('【历史参考结束】')));
+  ok('命中参考后以当前请求标题收尾', Boolean(hit?.promptPrefix.endsWith('【当前用户请求】')));
   ok(
     '注入的 citationId 与 citations 一致',
     Boolean(hit && hit.count > 0 && hit.promptPrefix.includes(hit.citations[0]!.citationId))
@@ -141,7 +143,8 @@ async function main(): Promise<void> {
   section('零命中与失败降级');
   const empty = inject.buildKbInjection(sA.id, 'qqqqvvvvxxxx');
   ok('零命中仍返回一行状态', Boolean(empty && empty.count === 0));
-  ok('零命中只注入状态行', Boolean(empty && empty.promptPrefix.includes(inject.KB_EMPTY_STATUS_LINE)));
+  ok('零命中提示检索状态', Boolean(empty && empty.promptPrefix.includes(inject.KB_EMPTY_STATUS_LINE)));
+  ok('零命中同样明确标记当前请求', Boolean(empty?.promptPrefix.endsWith('【当前用户请求】')));
   ok('零命中不出现 citation 标记', Boolean(empty && !empty.promptPrefix.includes('[KB:')));
   ok('零命中 tokensUsed 为 0', Boolean(empty && empty.tokensUsed === 0));
 

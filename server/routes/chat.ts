@@ -55,7 +55,7 @@ import { registry } from '../agents/registry.js';
 import { findDef } from '../agents/definitions.js';
 import { RunProjector } from '../agents/projector.js';
 import { scoreAgentSkills } from '../agents/types.js';
-import { resolveStoredModelForAgent } from '../model-routing.js';
+import { prepareModelForAgent, resolveStoredModelForAgent } from '../model-routing.js';
 import { runProfileOf } from '../agents/capability.js';
 import { maybeReprobeOnAuthError } from '../agents/auth-recovery.js';
 import { validateDirectory } from '../workspaceDir.js';
@@ -543,8 +543,12 @@ app.post("/api/chat", async (req, res) => {
 
   // 会话里存的模型可能是修复前的历史遗留值：那时所有会话都被写成了平台
   // 默认模型（claude-sonnet-4），对非 SDK Agent 来说那并不是用户的选择。
-  // `resolveStoredModelForAgent` 还会把 Tencent SDK 清单里已下线的旧名回退成
-  // undefined（不传 --model，交给 SDK 默认）。
+  // 清单必须先就绪，旧名与 Auto 占位符才能解析到 SDK 当前声明的默认值。
+  try {
+    await prepareModelForAgent(agentId, model || session?.model);
+  } catch (error: unknown) {
+    return res.status(503).json({ error: error instanceof Error ? error.message : '模型清单加载失败' });
+  }
   const resolvedModel = resolveStoredModelForAgent(
     agentId,
     model || session?.model || undefined
